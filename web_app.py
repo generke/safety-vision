@@ -6,14 +6,33 @@ from functools import lru_cache
 import cv2
 import gradio as gr
 import numpy as np
+import spaces
+import torch
 from ultralytics import YOLO
-
-from safety_vision.geometry import denormalize_polygon, point_in_polygon
 
 
 MODEL_NAME = "yolo11n.pt"
 DEFAULT_ZONE = [[0.15, 0.78], [0.38, 0.48], [0.72, 0.48], [0.92, 0.78]]
 MODEL_LOCK = threading.Lock()
+
+
+def denormalize_polygon(points: list[list[float]], width: int, height: int) -> list[tuple[int, int]]:
+    return [(round(x * width), round(y * height)) for x, y in points]
+
+
+def point_in_polygon(point: tuple[int, int], polygon: list[tuple[int, int]]) -> bool:
+    if len(polygon) < 3:
+        return False
+    x, y = point
+    inside = False
+    j = len(polygon) - 1
+    for i, (xi, yi) in enumerate(polygon):
+        xj, yj = polygon[j]
+        crosses = (yi > y) != (yj > y)
+        if crosses and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
 
 
 @lru_cache(maxsize=1)
@@ -22,6 +41,7 @@ def get_model() -> YOLO:
     return YOLO(MODEL_NAME)
 
 
+@spaces.GPU(duration=10)
 def analyze_frame(
     frame_rgb: np.ndarray | None,
     confidence: float,
@@ -47,6 +67,7 @@ def analyze_frame(
             classes=[0],
             conf=float(confidence),
             imgsz=640,
+            device=0 if torch.cuda.is_available() else "cpu",
             verbose=False,
         )[0]
 
@@ -81,13 +102,7 @@ def analyze_frame(
     return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), status
 
 
-CSS = """
-.gradio-container {max-width: 1180px !important; margin: auto !important;}
-footer {display: none !important;}
-"""
-
-
-with gr.Blocks(title="Safety Vision", css=CSS) as demo:
+with gr.Blocks(title="Safety Vision") as demo:
     gr.Markdown(
         """
         # Safety Vision
