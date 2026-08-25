@@ -36,6 +36,35 @@ def zone_message(selected, points):
     return f"Зона **{selected}**: {len(points)} точек — {state}."
 
 
+def draw_zone_editor(frame, points):
+    if frame is None:
+        return None
+    canvas = frame.copy()
+    height, width = canvas.shape[:2]
+    polygon = denormalize_polygon(points, width, height)
+    if polygon:
+        polygon_np = np.asarray(polygon, dtype=np.int32)
+        if len(polygon) >= 3:
+            overlay = canvas.copy()
+            cv2.fillPoly(overlay, [polygon_np], (255, 180, 0))
+            canvas = cv2.addWeighted(overlay, 0.18, canvas, 0.82, 0)
+            cv2.polylines(canvas, [polygon_np], True, (255, 135, 0), 3)
+        elif len(polygon) >= 2:
+            cv2.polylines(canvas, [polygon_np], False, (255, 135, 0), 3)
+        for number, point in enumerate(polygon, start=1):
+            cv2.circle(canvas, point, 8, (255, 80, 0), -1)
+            cv2.putText(canvas, str(number), (point[0] + 9, point[1] - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 80, 0), 2)
+    return canvas
+
+
+def freeze_frame(frame, selected, profiles):
+    if frame is None:
+        return None, None, "Сначала включите камеру и дождитесь кадра."
+    frozen = frame.copy()
+    points = (profiles or DEFAULT_CAMERAS).get(selected, [])
+    return frozen, draw_zone_editor(frozen, points), f"Кадр камеры **{selected}** зафиксирован. Ставьте вершины кликами по изображению ниже."
+
+
 def add_camera(name, profiles):
     profiles = clone_profiles(profiles)
     clean_name = (name or "").strip()
@@ -57,31 +86,38 @@ def delete_camera(selected, profiles):
     return profiles, gr.Dropdown(choices=list(profiles), value=new_selected), f"Камера **{selected}** удалена."
 
 
-def clear_zone(selected, profiles):
+def clear_zone(selected, profiles, frozen):
     profiles = clone_profiles(profiles)
     profiles[selected] = []
-    return profiles, f"Зона камеры **{selected}** очищена. Добавьте минимум 3 точки."
+    return profiles, draw_zone_editor(frozen, []), f"Зона камеры **{selected}** очищена. Добавьте минимум 3 точки."
 
 
-def undo_point(selected, profiles):
+def undo_point(selected, profiles, frozen):
     profiles = clone_profiles(profiles)
     points = profiles.setdefault(selected, [])
     if points:
         points.pop()
-    return profiles, zone_message(selected, points)
+    return profiles, draw_zone_editor(frozen, points), zone_message(selected, points)
 
 
-def add_zone_point(selected, profiles, frame, evt: gr.SelectData):
+def add_zone_point(selected, profiles, frozen, evt: gr.SelectData):
     profiles = clone_profiles(profiles)
-    if frame is None or not isinstance(evt.index, (list, tuple)) or len(evt.index) < 2:
-        return profiles, "Сначала включите камеру и дождитесь изображения."
-    height, width = frame.shape[:2]
+    if frozen is None or not isinstance(evt.index, (list, tuple)) or len(evt.index) < 2:
+        return profiles, None, "Сначала нажмите «Зафиксировать кадр для разметки»."
+    height, width = frozen.shape[:2]
     x, y = evt.index[:2]
     profiles.setdefault(selected, []).append([
         min(1.0, max(0.0, float(x) / width)),
         min(1.0, max(0.0, float(y) / height)),
     ])
-    return profiles, zone_message(selected, profiles[selected])
+    return profiles, draw_zone_editor(frozen, profiles[selected]), zone_message(selected, profiles[selected])
+
+
+def save_zone(selected, profiles):
+    points = (profiles or {}).get(selected, [])
+    if len(points) < 3:
+        return f"❌ Зона **{selected}** не сохранена: поставьте минимум 3 точки."
+    return f"✅ Зона **{selected}** сохранена: {len(points)} точек. Она уже применяется к видеопотоку."
 
 
 @lru_cache(maxsize=1)
@@ -144,6 +180,7 @@ def analyze_frame(frame_rgb, confidence, selected, profiles):
 
 with gr.Blocks(title="Safety Vision") as demo:
     profiles = gr.State(DEFAULT_CAMERAS)
+    frozen_frame = gr.State(None)
     gr.Markdown("# Safety Vision\n**Несколько камер · отдельная многоугольная зона для каждой.**")
     with gr.Row():
         with gr.Column(scale=1):
@@ -154,20 +191,30 @@ with gr.Blocks(title="Safety Vision") as demo:
             delete_camera_button = gr.Button("Удалить текущую камеру", size="sm")
             camera = gr.Image(sources=["webcam"], type="numpy", streaming=True, label="Источник выбранной камеры")
             confidence = gr.Slider(0.2, 0.9, value=0.45, step=0.05, label="Порог уверенности")
+            freeze_button = gr.Button("Зафиксировать кадр для разметки", variant="primary")
         with gr.Column(scale=1):
-            output = gr.Image(label="Результат — нажимайте по кадру, чтобы поставить вершины", streaming=True, interactive=False)
+            output = gr.Image(label="Мониторинг", streaming=True, interactive=False)
+            zone_canvas = gr.Image(
+                label="Редактор зоны — ставьте вершины кликами",
+                type="numpy",
+                interactive=True,
+                visible=True,
+            )
             with gr.Row():
                 undo_button = gr.Button("Отменить точку")
                 clear_button = gr.Button("Очистить зону")
+                save_button = gr.Button("Сохранить зону", variant="primary")
             zone_status = gr.Markdown("Зона **Камера 1**: 0 точек — нужно минимум 3.")
             status = gr.Markdown("### Ожидание камеры")
 
     add_camera_button.click(add_camera, [camera_name, profiles], [profiles, selected_camera, zone_status])
     delete_camera_button.click(delete_camera, [selected_camera, profiles], [profiles, selected_camera, zone_status])
-    undo_button.click(undo_point, [selected_camera, profiles], [profiles, zone_status])
-    clear_button.click(clear_zone, [selected_camera, profiles], [profiles, zone_status])
+    freeze_button.click(freeze_frame, [camera, selected_camera, profiles], [frozen_frame, zone_canvas, zone_status])
+    undo_button.click(undo_point, [selected_camera, profiles, frozen_frame], [profiles, zone_canvas, zone_status])
+    clear_button.click(clear_zone, [selected_camera, profiles, frozen_frame], [profiles, zone_canvas, zone_status])
+    save_button.click(save_zone, [selected_camera, profiles], zone_status)
     selected_camera.change(lambda name, data: zone_message(name, (data or {}).get(name, [])), [selected_camera, profiles], zone_status)
-    output.select(add_zone_point, [selected_camera, profiles, output], [profiles, zone_status], show_progress="hidden")
+    zone_canvas.select(add_zone_point, [selected_camera, profiles, frozen_frame], [profiles, zone_canvas, zone_status], show_progress="hidden")
     camera.stream(
         fn=analyze_frame,
         inputs=[camera, confidence, selected_camera, profiles], outputs=[output, status],
