@@ -117,7 +117,6 @@ with gr.Blocks(title="Safety Vision") as demo:
                 type="numpy",
                 streaming=True,
                 label="Камера",
-                mirror_webcam=True,
             )
             confidence = gr.Slider(
                 minimum=0.2,
