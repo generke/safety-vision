@@ -1,0 +1,12 @@
+{
+  "zone_name": "Danger zone",
+  "polygon_normalized": [
+    [0.15, 0.78],
+    [0.38, 0.48],
+    [0.72, 0.48],
+    [0.92, 0.78]
+  ],
+  "confidence": 0.45,
+  "alarm_cooldown_seconds": 2.0
+}
+
